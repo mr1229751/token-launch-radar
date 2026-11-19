@@ -22,18 +22,30 @@ writes the ranked board to `/output/board.json`, the dashboard's data to
 
 The model, in `lib/model.ts`:
 
-1. **Peer multiples.** For every category, fit the market-cap-to-TVL ratios
-   of the protocols whose token already trades (25th percentile, median,
-   75th). A pre-token protocol is priced the way the market already prices
-   its launched peers: implied value = TVL x category median multiple.
-2. **Adjustments.** The base is scaled by the protocol's own seven-day TVL
-   momentum (half the move, clamped at +/-40%) and by its maturity (up to
-   +30% across five tracked years with no token). The peer band re-prices
-   the value at the category's P25 and P75 multiples.
-3. **Set aside, not ranked.** Records that are wrapped, staked, bridged or
+1. **A fitted curve, not a multiple.** The market's pricing of the launched
+   protocols is fitted as log market cap on log TVL (least absolute
+   deviations, so a few enormous protocols cannot bend it). The fitted
+   slope is about one half — market cap grows with roughly the square root
+   of TVL — so any single market-cap/TVL multiple, which assumes a slope
+   of one, systematically overprices large protocols and underprices
+   small ones. Each category shifts the curve by its launched peers'
+   median residual, shrunk toward no shift by n/(n+8): many peers earn a
+   real shift, one peer earns a ninth of its raw pull, none earns nothing.
+   The band beside each value is the fit's own residual spread (P25–P75).
+2. **Adjustments.** The curve base is scaled by the protocol's own
+   seven-day TVL momentum (half the move, clamped at +/-40%) and by its
+   maturity (up to +30% across five tracked years with no token).
+3. **The model grades itself.** On every run, `calibrate()` hides each
+   launched peer's market cap in turn, refits everything on the remaining
+   peers, and prices it: on this snapshot the curve's typical miss is
+   x3.7 with 31% of launched peers priced within 2x of their real market
+   cap (band coverage 48%), against x5.1, 20% and 36% for the
+   category-multiple model it replaced. Those numbers are recomputed,
+   never hardcoded, and ship in the dashboard's data.
+4. **Set aside, not ranked.** Records that are wrapped, staked, bridged or
    exchange products of a token that already trades (WBTC is Bitcoin, not a
    launch) are excluded from the board with the reason stated on the page.
-4. **Farm plans.** Each protocol gets five steps written from its category,
+5. **Farm plans.** Each protocol gets five steps written from its category,
    its main chain and its size: set up, put working capital to work, hold a
    weekly rhythm, spread or deepen, then watch for the snapshot and claim.
    Every step states what it costs in dollars and how long it takes.

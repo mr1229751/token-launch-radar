@@ -54,25 +54,40 @@ function renderStats() {
 function renderMethod() {
   const g = R.globalFit;
   const sa = R.setAside;
+  const cal = R.calibration;
+  const miss = (m) => 'x' + Math.exp(m.medAbsLogErr).toFixed(1);
+  const pct = (x) => Math.round(x * 100) + '%';
+  const top = R.rows[0];
+  const small = [...R.rows].reverse().find((r) => r.watchlist) || R.rows[R.rows.length - 1];
   $('modelStrip').innerHTML =
-    `Priced as <b>TVL x the median market-cap/TVL multiple of launched peers</b> in the same line of work, ` +
-    `adjusted for seven-day momentum and maturity. The full method, the fitted multiples and the records set aside are below the board.`;
+    `Priced on <b>a curve fitted to the launched peers: market cap grows with roughly the square root of TVL</b> ` +
+    `(fitted slope ${g.slope.toFixed(2)}), shifted per category and adjusted for seven-day momentum and maturity. ` +
+    `The full method, the category shifts, the model's own backtest and the records set aside are below the board.`;
   $('methodText').innerHTML =
-    `For every category, the radar fits the <b>market-cap-to-TVL multiples of the protocols whose token already trades</b> ` +
-    `(${g.peers} launched peers overall; median <b>${g.median.toFixed(2)}x</b>, peer band ${g.p25.toFixed(2)}x to ${g.p75.toFixed(2)}x, winsorised at the 5th-95th percentile so one mispriced micro-cap cannot stretch it). ` +
-    `A pre-token protocol is priced as <b>TVL x its category's median multiple where that category has launched peers — the overall median otherwise</b> (the board marks those rows "overall"), ` +
-    `adjusted by its own seven-day TVL momentum (half the move, clamped at +/-40%) and by its maturity (up to +30% across five tracked years with no token). ` +
-    `The band beside each value re-prices it at the fit's 25th and 75th percentile multiples: the market's own spread, not an error bar. ` +
+    `The radar learns how the market prices a token from the <b>${g.peers} protocols in the snapshot whose token already trades</b>: ` +
+    `a robust fit of log market cap on log TVL, centred at the median peer's TVL of ${fmtMoney(g.t0)}. The fitted slope is <b>${g.slope.toFixed(2)}</b> — ` +
+    `across the launched universe, doubling TVL multiplies market cap by about ${Math.pow(2, g.slope).toFixed(2)}, not by two. ` +
+    `A single market-cap/TVL multiple assumes a slope of one, which is why it overprices the largest protocols and underprices the smallest. ` +
+    `Each category then shifts the curve by the median of its launched peers' residuals, <b>shrunk toward no shift by n/(n+8)</b>: ` +
+    `a category with fifteen peers moves its prices most of the way to its own evidence; a category with one peer moves a ninth of the way; a category with none prices on the global curve alone (the board marks those rows "overall"). ` +
+    `The price is then adjusted by the protocol's own seven-day TVL momentum (half the move, clamped at +/-40%) and by its maturity (up to +30% across five tracked years with no token). ` +
+    `The band beside each value re-prices it at the fit's own 25th and 75th percentile residuals: how far launched peers actually landed from this curve's prices. ` +
+    `<b>The model grades itself on every run.</b> Hiding each launched peer's market cap in turn and pricing it from the remaining ${g.peers - 1} — refitting everything, so nothing the priced peer influenced is used to price it — ` +
+    `this curve's typical miss is <b>${miss(cal.curve)}</b> with <b>${pct(cal.within2x)}</b> of launched peers priced within 2x of their real market cap, and its band held <b>${pct(cal.bandCoverage)}</b> of them. ` +
+    `The category-multiple model it replaced scores ${miss(cal.ratio)}, ${pct(cal.ratio.within2x)} and ${pct(cal.ratio.bandCoverage)} on the same test. ` +
+    `That is retrospective calibration on protocols that did launch — it measures how faithfully the model reproduces the market's own pricing, not a promise about any protocol that has not. ` +
+    `Two worked examples: <b>${esc(top.name)}</b> (rank 1) carries ${fmtMoney(top.tvl_usd)} of TVL; the curve reads ${fmtFull(top.base)} before its momentum and maturity adjustments take it to ${fmtFull(top.implied)}. ` +
+    `<b>${esc(small.name)}</b>, near the foot of the board at ${fmtMoney(small.tvl_usd)} of TVL, reads ${fmtFull(small.base)} on the same curve — proportionally far more per TVL dollar, because the fitted slope is below one. ` +
     `No protocol is named in the model; run it on a newer snapshot and it prices that universe instead. ` +
     `Every farm plan on the board is five steps written from the protocol's category, main chain and size: set up, put working capital to work, hold a weekly rhythm, spread or deepen, then watch for the snapshot and claim — each step states what it costs in dollars and how long it takes, and the closing total is the sum of the plan's own itemised costs. ` +
     `The radar sets aside <b>${sa.products.count} wrapped, staked or bridged products of a token that already trades</b> (${sa.products.examples.map(esc).join(', ')}): their value already trades under the parent token. ` +
     `It also sets aside <b>${sa.exchanges.count} exchange records</b> (${sa.exchanges.examples.map(esc).join(', ')}): an exchange's own listing is not a protocol launch. Every set-aside is listed with its reason below.`;
-  const head = '<tr><th>Category</th><th class="num">Launched peers</th><th class="num">P25</th><th class="num">Median</th><th class="num">P75</th></tr>';
+  const head = '<tr><th>Category</th><th class="num">Launched peers</th><th class="num">Shift of the curve</th></tr>';
   const shown = R.fits.slice(0, 8);
   const body = shown.map((f) =>
-    `<tr><td>${esc(f.category)}</td><td class="num">${f.peers}</td><td class="num">${f.p25.toFixed(2)}x</td><td class="num">${f.median.toFixed(2)}x</td><td class="num">${f.p75.toFixed(2)}x</td></tr>`).join('');
+    `<tr><td>${esc(f.category)}</td><td class="num">${f.peers}</td><td class="num">x ${f.offset.toFixed(2)}</td></tr>`).join('');
   const more = R.fits.length > shown.length
-    ? `<tr><td colspan="5" style="color:var(--muted)">…and ${R.fits.length - shown.length} more fitted categories, used the same way; categories with fewer than three launched peers price at the overall fit.</td></tr>`
+    ? `<tr><td colspan="3" style="color:var(--muted)">…and ${R.fits.length - shown.length} more category shifts, used the same way; every shift is shrunk toward x1.00 by n/(n+8), and a category with no launched peers shifts nothing.</td></tr>`
     : '';
   $('fitsTable').innerHTML = head + body + more;
 }
@@ -85,7 +100,7 @@ const state = { sortKey: 'rank', sortDir: 1, selected: null, pins: [], sbW: 0.5,
 
 // The sandbox re-prices the board in the page under the reader's own
 // momentum weight and maturity bonus, using the same formula the program
-// fits with: implied = TVL x fitted multiple x momentum x maturity. At the
+// fits with: implied = fitted curve base x momentum x maturity. At the
 // model's own settings (50%, +30%) it returns the submitted board exactly;
 // board.json itself is never touched.
 function sandboxActive() {
@@ -97,7 +112,7 @@ function viewOf(r) {
   const growth = Math.max(-40, Math.min(40, r.change_7d ?? 0));
   const mom = 1 + (growth / 100) * state.sbW;
   const mat = r.ageDays === null ? 1 : 1 + state.sbB * (Math.min(r.ageDays, 1825) / 1825);
-  const imp = Math.max(1, Math.round(r.tvl_usd * r.multiple * mom * mat));
+  const imp = Math.max(1, Math.round(r.base * mom * mat));
   const k = r.implied > 0 ? imp / r.implied : 1;
   return { implied: imp, low: Math.round(r.impliedLow * k), high: Math.round(r.impliedHigh * k) };
 }
@@ -108,7 +123,7 @@ function renderSandbox() {
   $('sbReset').hidden = !sandboxActive();
   $('sbNote').innerHTML = sandboxActive()
     ? `<b>Sandbox pricing is on</b> — ranks and values below are re-priced in this page at momentum ${Math.round(state.sbW * 100)}% and maturity +${Math.round(state.sbB * 100)}%. The submitted board (board.json) is unchanged; reset returns to it.`
-    : `The fitted multiples are the market's; the two adjustments are the radar's. Move them and the board re-prices in the page — the submitted board (board.json) never changes. Pin any three protocols to compare them, export the board as CSV, or press <b>/</b> to jump to a protocol.`;
+    : `The fitted curve is the market's; the two adjustments are the radar's. Move them and the board re-prices in the page — the submitted board (board.json) never changes. Pin any three protocols to compare them, export the board as CSV, or press <b>/</b> to jump to a protocol.`;
 }
 
 function filteredRows() {
@@ -156,7 +171,7 @@ function renderBoard() {
       <td class="num money">${fmtMoney(r.tvl_usd)}</td>
       <td class="num">${fmtPct(r.change_7d)}</td>
       <td class="num">${fmtAge(r.ageDays)}</td>
-      <td class="num money">${r.multiple.toFixed(2)}x${r.fitName === 'All categories' ? '<span class="overall">OVERALL</span>' : ''}</td>
+      <td class="num money">x ${r.catOffset.toFixed(2)}${r.fitName === 'All categories' ? '<span class="overall">OVERALL</span>' : ''}</td>
       <td class="num imp">${fmtMoney(v.implied)}</td>
       <td class="num band">${fmtMoney(v.low)} – ${fmtMoney(v.high)}</td>
       <td><button class="pinbtn${state.pins.includes(r.slug) ? ' on' : ''}" data-pin="${esc(r.slug)}" type="button">${state.pins.includes(r.slug) ? 'Pinned' : 'Pin'}</button></td>
@@ -225,9 +240,10 @@ function openCompare() {
       <tr><td>Total value locked</td>${num((r) => fmtFull(r.tvl_usd))}</tr>
       <tr><td>TVL change, 7d</td>${num((r) => (r.change_7d === null ? 'unreported' : r.change_7d.toFixed(2) + '%'))}</tr>
       <tr><td>Age with no token</td>${num((r) => fmtAge(r.ageDays))}</tr>
-      <tr><td>Peer multiple</td>${num((r) => r.multiple.toFixed(3) + 'x (' + esc(r.fitName) + ' fit)')}</tr>
+      <tr><td>Fitted curve base</td>${num((r) => fmtFull(r.base))}</tr>
+      <tr><td>Category shift</td>${num((r) => 'x ' + r.catOffset.toFixed(3) + ' (' + esc(r.fitName) + ', ' + r.catPeers + ' launched peers)')}</tr>
       <tr><td>Implied value</td>${num((r) => '<b>' + fmtFull(r.implied) + '</b>')}</tr>
-      <tr><td>Peer band (P25 – P75)</td>${num((r) => fmtFull(r.impliedLow) + ' – ' + fmtFull(r.impliedHigh))}</tr>
+      <tr><td>Fit band (residual P25 – P75)</td>${num((r) => fmtFull(r.impliedLow) + ' – ' + fmtFull(r.impliedHigh))}</tr>
       <tr><td>Farm plan</td>${cell((r) => { const t = planTotals(r); return `${r.farm_steps.length} steps · about ${t.fees} in fees over ${t.weeks} weeks, plus ${t.cap} of working capital`; })}</tr>
       <tr><td>Core move</td>${cell((r) => esc(r.farm_steps[1] || ''))}</tr>
     </table></div>`;
@@ -243,10 +259,10 @@ function closeCompare() {
 
 function exportCsv() {
   const rows = sortedRows(filteredRows());
-  const head = 'rank,name,slug,category,chains,tvl_usd,change_7d_pct,age_days,peer_multiple,implied_value_usd,band_low_usd,band_high_usd,watchlist';
+  const head = 'rank,name,slug,category,chains,tvl_usd,change_7d_pct,age_days,curve_base_usd,category_shift,category_peers,implied_value_usd,band_low_usd,band_high_usd,watchlist';
   const q = (s) => `"${String(s).replace(/"/g, '""')}"`;
   const lines = rows.map((r) => [r.rank, q(r.name), r.slug, q(r.category ?? 'Uncategorised'), q(r.chains.join(' ')),
-    r.tvl_usd, r.change_7d ?? '', r.ageDays ?? '', r.multiple.toFixed(4), r.implied, r.impliedLow, r.impliedHigh, r.watchlist ? 1 : 0].join(','));
+    r.tvl_usd, r.change_7d ?? '', r.ageDays ?? '', Math.round(r.base), r.catOffset.toFixed(4), r.catPeers, r.implied, r.impliedLow, r.impliedHigh, r.watchlist ? 1 : 0].join(','));
   const blob = new Blob([head + '\n' + lines.join('\n') + '\n'], { type: 'text/csv' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -284,7 +300,7 @@ function openDetail(slug) {
   const r = R.rows.find((x) => x.slug === slug);
   if (!r) return;
   state.selected = slug;
-  const fit = R.fits.find((f) => f.category === r.fitName) || R.globalFit;
+  const g = R.globalFit;
   const d = $('detail');
   d.hidden = false;
   d.innerHTML = `
@@ -301,11 +317,13 @@ function openDetail(slug) {
         <h3>How the value is built</h3>
         <table class="breakdown">
           <tr><td>Total value locked (snapshot)</td><td class="num">${fmtFull(r.tvl_usd)}</td></tr>
-          <tr><td>Peer multiple (${fit.category === 'All categories' ? `overall median of ${fit.peers} launched peers — ${esc(r.category ?? 'this category')} has too few launched peers to fit alone` : `median of ${fit.peers} launched ${esc(fit.category)} peers${fit.category !== (r.category ?? '') ? ` — ${esc(r.category ?? '')} prices under the shared ${esc(fit.category)} fit` : ''}`})</td><td class="num">x ${r.multiple.toFixed(3)}</td></tr>
+          <tr><td>Fitted curve at this TVL (slope ${g.slope.toFixed(2)} on ${g.peers} launched peers, centred at ${fmtMoney(g.t0)})</td><td class="num">${fmtFull(r.base / r.catOffset)}</td></tr>
+          <tr><td>Category shift (${r.catPeers === 0 ? `${esc(r.category ?? 'this category')} has no launched peers — the global curve prices this row alone` : `${r.catPeers} launched ${esc(r.fitName)} peer${r.catPeers === 1 ? '' : 's'}, median residual shrunk by ${r.catPeers}/(${r.catPeers}+8)`})</td><td class="num">x ${r.catOffset.toFixed(3)}</td></tr>
+          <tr><td>Curve base after the shift</td><td class="num">${fmtFull(r.base)}</td></tr>
           <tr><td>Seven-day momentum (${r.change_7d === null ? 'unreported' : r.change_7d.toFixed(2) + '%'}, half weight)</td><td class="num">x ${r.momentumMult.toFixed(3)}</td></tr>
           <tr><td>Maturity (${fmtAge(r.ageDays)} tracked, no token)</td><td class="num">x ${r.maturityMult.toFixed(3)}</td></tr>
           <tr class="total"><td>Implied value</td><td class="num">${fmtFull(r.implied)}</td></tr>
-          <tr><td>Peer band (P25 to P75 multiples)</td><td class="num">${fmtFull(r.impliedLow)} – ${fmtFull(r.impliedHigh)}</td></tr>
+          <tr><td>Fit band (the curve's own residual P25 to P75)</td><td class="num">${fmtFull(r.impliedLow)} – ${fmtFull(r.impliedHigh)}</td></tr>
         </table>
         <h3 style="margin-top:16px">The protocol</h3>
         <dl class="kv">

@@ -23,7 +23,7 @@
 <section class="sandbox" id="sandbox">
   <div class="sb-head">
     <h2>Model sandbox</h2>
-    <span class="sb-note" id="sbNote">The fitted multiples are the market's; the two adjustments are the radar's. Move them and the board re-prices in the page — the submitted board (board.json) never changes. Pin any three protocols to compare them, export the board as CSV, or press <b>/</b> to jump to a protocol.</span>
+    <span class="sb-note" id="sbNote">The fitted curve is the market's; the two adjustments are the radar's. Move them and the board re-prices in the page — the submitted board (board.json) never changes. Pin any three protocols to compare them, export the board as CSV, or press <b>/</b> to jump to a protocol.</span>
     <button class="closebtn" id="sbReset" type="button" hidden>Reset to the model</button>
   </div>
   <div class="sb-grid">
@@ -38,9 +38,8 @@
   <label class="ctl">Chain <select id="chain"></select></label>
   <label class="ctl check"><input type="checkbox" id="watchOnly"> Watchlist only</label>
   <label class="ctl">Min implied <select id="minImp">
-    <option value="0">Any value</option><option value="10000000">$10M+</option>
-    <option value="50000000">$50M+</option><option value="100000000">$100M+</option>
-    <option value="500000000">$500M+</option><option value="1000000000">$1B+</option>
+    <option value="0">Any value</option><option value="1000000">$1M+</option><option value="10000000">$10M+</option>
+    <option value="25000000">$25M+</option><option value="50000000">$50M+</option><option value="100000000">$100M+</option>
   </select></label>
   <button class="closebtn" id="paletteBtn" type="button">Jump to protocol ( / )</button>
   <button class="closebtn" id="csvBtn" type="button">Export CSV</button>
@@ -56,8 +55,8 @@
       <th data-sort="rank" class="num">#</th><th data-sort="name">Protocol</th>
       <th data-sort="category">Category</th><th>Chains</th>
       <th data-sort="tvl_usd" class="num">TVL</th><th data-sort="change_7d" class="num">7d</th>
-      <th data-sort="ageDays" class="num">Age</th><th data-sort="multiple" class="num">Peer x</th>
-      <th data-sort="implied" class="num">Implied value</th><th class="num">Peer band</th><th></th>
+      <th data-sort="ageDays" class="num">Age</th><th data-sort="catOffset" class="num">Cat shift</th>
+      <th data-sort="implied" class="num">Implied value</th><th class="num">Fit band</th><th></th>
     </tr></thead>
     <tbody id="boardBody"></tbody>
   </table>
@@ -70,7 +69,7 @@
 
   <section class="live">
     <h2>Already trading — the peers the model is fitted on</h2>
-    <p class="live-note">These protocols already have a token, so they are not on the board. Their market-cap-to-TVL ratios, grouped by category, are what prices the board above.</p>
+    <p class="live-note">These protocols already have a token, so they are not on the board. Their market caps and TVLs are the evidence the pricing curve is fitted on; the ratio column is shown so the raw material can be inspected, not because any single ratio prices anything.</p>
     <div class="fits-wrap"><table class="fits" id="liveTable"></table></div>
   </section>
 

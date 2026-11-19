@@ -3,17 +3,30 @@
 // Everything the board claims is derived here from the sealed snapshot's own
 // figures, in three moves:
 //
-//   1. peerMultiples() fits, for every category, the market-cap-to-TVL ratios
-//      of the protocols in that category whose token already trades. A
-//      pre-token protocol is priced the way the market already prices its
-//      launched peers: implied value = TVL x category multiple.
+//   1. fitCurve() learns how the market prices the protocols whose token
+//      already trades: a robust (least-absolute-deviations) fit of log
+//      market cap on log TVL over every launched peer. The fitted slope is
+//      about one half — market cap grows with roughly the square root of
+//      TVL, not in proportion to it — so a single market-cap/TVL multiple
+//      systematically overprices large protocols and underprices small
+//      ones. Each category then shifts the curve by its own median
+//      residual, shrunk toward the whole by n/(n+8): a category with many
+//      launched peers moves its prices, a category with two barely does,
+//      and a category with none prices on the global curve alone. The
+//      spread of the fit's own residuals (25th to 75th percentile) becomes
+//      the value band.
 //   2. valueProtocol() adjusts that base for the two signals the snapshot
 //      carries about the protocol itself: its seven-day TVL momentum and
-//      its maturity (how long DefiLlama has tracked it with no token). The
-//      peer spread (25th to 75th percentile) becomes the value band.
+//      its maturity (how long DefiLlama has tracked it with no token).
 //   3. farmPlan() writes each protocol a concrete plan from its category,
 //      its chains and its size tier: what to do, what it costs, how long
 //      the campaign runs.
+//
+// The model grades itself: calibrate() hides each launched peer's market
+// cap in turn, prices it from the remaining peers, and reports the typical
+// error of this fit against the simpler category-median-multiple model it
+// replaced. Those numbers ship in the dashboard's data, recomputed on
+// every run — the radar's accuracy claim is measured, not asserted.
 //
 // No protocol is named anywhere in this file. Feed it a different snapshot
 // and it prices that universe instead: the radar is the model, not a list.
@@ -39,25 +52,57 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-export interface CategoryFit {
+/** One category's shift of the global curve: exp(u) as a multiplier, fitted from that category's launched peers and shrunk toward 1 (no shift) by n/(n+8). */
+export interface CategoryOffset {
   category: string;
   peers: number;
-  p25: number;
-  median: number;
-  p75: number;
+  offset: number;
+}
+
+/** The fitted pricing curve over all launched peers, plus the spread of its own residuals. */
+export interface CurveFit {
+  peers: number;
+  /** Intercept of the log-log fit: log market cap at the median peer TVL. */
+  intercept: number;
+  /** Slope of the log-log fit: how fast market cap grows with TVL. */
+  slope: number;
+  /** The median launched peer's TVL; the curve is centred here. */
+  t0: number;
+  residQ25: number;
+  residQ75: number;
+  byCategory: Map<string, CategoryOffset>;
+}
+
+/** One model's leave-one-out score over the launched peers. */
+export interface ModelScore {
+  /** Median absolute log error: exp of this is the typical pricing miss, as a multiple. */
+  medAbsLogErr: number;
+  /** Share of launched peers priced within 2x of their real market cap. */
+  within2x: number;
+  /** Share of launched peers whose real market cap fell inside the model's band. */
+  bandCoverage: number;
+}
+
+export interface Calibration {
+  peers: number;
+  curve: ModelScore;
+  ratio: ModelScore;
 }
 
 export interface Valuation {
-  multiple: number;
-  multipleLow: number;
-  multipleHigh: number;
+  /** The fitted curve's price before momentum and maturity: exp(intercept + slope x log(TVL/t0) + category shift). */
+  base: number;
+  /** The category shift applied to this row, as a multiplier (1 when the category has no launched peers). */
+  catOffset: number;
+  /** Launched peers in this row's category — the evidence behind its shift. */
+  catPeers: number;
   momentumMult: number;
   maturityMult: number;
   ageDays: number | null;
   implied: number;
   impliedLow: number;
   impliedHigh: number;
-  /** The fit that priced this row: a category (or shared) fit's name, or 'All categories' for the overall fallback. */
+  /** The category whose shift priced this row, or 'All categories' when it has no launched peers. */
   fitName: string;
 }
 
@@ -102,8 +147,9 @@ export interface RadarData {
     rows: { name: string; category: string | null; tvl_usd: number; reason: string }[];
   };
   totalImplied: number;
-  fits: CategoryFit[];
-  globalFit: CategoryFit;
+  fits: CategoryOffset[];
+  globalFit: { peers: number; slope: number; t0: number; residQ25: number; residQ75: number };
+  calibration: Calibration;
   rows: RadarRow[];
   live: LivePeer[];
 }
@@ -181,44 +227,91 @@ function fitOf(category: string, ratios: number[]): CategoryFit {
 }
 
 /**
- * The fit group a category prices under: its own name. A category with
- * fewer than three launched peers prices at the overall fit instead, and
- * the board marks those rows "overall" — a thin three-peer median would
- * be a weaker claim than the 128-peer overall one, not a stronger one.
+ * The fit group a category prices under: its own name. There is no peer
+ * threshold and no fallback cliff in the curve model: a category's shift
+ * is shrunk toward zero (the global curve) by n/(n+8), so thin categories
+ * move prices only slightly, and a category with no launched peers at all
+ * prices on the global curve alone — the board marks those rows "overall".
  */
 export function fitGroupOf(category: string | null): string {
   return category ?? 'Uncategorised';
 }
 
+const medianOf = (xs: number[]): number => quantile([...xs].sort((a, b) => a - b), 0.5);
+
 /**
- * Fit the market-cap/TVL multiples of the already-launched protocols, per
- * category and overall. Categories with fewer than three traded peers fall
- * back to the overall fit when a protocol is priced. The overall fit is
- * winsorised at its own 5th and 95th percentiles first, so one mispriced
- * micro-cap cannot stretch the band every fallback row displays.
+ * Least-absolute-deviations line fit by iteratively reweighted least
+ * squares: a fixed iteration count and a fixed weight floor keep it
+ * deterministic — same peers in, same line out, on any runtime. LAD is
+ * used because market caps are heavy-tailed: a squared-error fit would
+ * let a few enormous protocols bend the curve everyone is priced on.
  */
-export function peerMultiples(protocols: Protocol[]): { byCategory: Map<string, CategoryFit>; global: CategoryFit } {
-  const groups = new Map<string, number[]>();
-  const all: number[] = [];
-  for (const p of protocols) {
-    if (recordsNoToken(p) || p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
-    const ratio = p.mcap_usd / p.tvl_usd;
-    if (!Number.isFinite(ratio) || ratio <= 0) continue;
+function ladFit(xs: number[], ys: number[]): { a: number; b: number } {
+  let a = medianOf(ys);
+  let b = 0;
+  for (let iter = 0; iter < 60; iter++) {
+    let sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (let i = 0; i < xs.length; i++) {
+      const r = ys[i]! - (a + b * xs[i]!);
+      const w = 1 / Math.max(Math.abs(r), 0.05);
+      sw += w; sx += w * xs[i]!; sy += w * ys[i]!; sxx += w * xs[i]! * xs[i]!; sxy += w * xs[i]! * ys[i]!;
+    }
+    const det = sw * sxx - sx * sx;
+    if (Math.abs(det) < 1e-12) break;
+    const na = (sy * sxx - sx * sxy) / det;
+    const nb = (sw * sxy - sx * sy) / det;
+    if (Math.abs(na - a) < 1e-10 && Math.abs(nb - b) < 1e-10) { a = na; b = nb; break; }
+    a = na; b = nb;
+  }
+  return { a, b };
+}
+
+/** The launched peers a fit may learn from: token recorded, positive market cap and TVL. */
+export function launchedPeers(protocols: Protocol[]): Protocol[] {
+  return protocols.filter(
+    (p) => !recordsNoToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0,
+  );
+}
+
+/**
+ * Fit the pricing curve on the launched peers: log market cap against log
+ * TVL, centred at the median peer TVL. Then each category's median
+ * residual becomes its shift of the curve, shrunk by n/(n+8) so a
+ * category must earn its deviation with peers. The band is the spread of
+ * the fit's own residuals — how far launched peers actually landed from
+ * the prices this same curve would have given them.
+ */
+export function fitCurve(protocols: Protocol[]): CurveFit {
+  const peers = launchedPeers(protocols);
+  const t0 = medianOf(peers.map((p) => p.tvl_usd));
+  const xs = peers.map((p) => Math.log(p.tvl_usd / t0));
+  const ys = peers.map((p) => Math.log(p.mcap_usd!));
+  const { a, b } = ladFit(xs, ys);
+  const residByCat = new Map<string, number[]>();
+  const allResid: number[] = [];
+  peers.forEach((p, i) => {
+    const r = ys[i]! - (a + b * xs[i]!);
+    allResid.push(r);
     const key = fitGroupOf(p.category);
-    const list = groups.get(key);
-    if (list) list.push(ratio);
-    else groups.set(key, [ratio]);
-    all.push(ratio);
+    const list = residByCat.get(key);
+    if (list) list.push(r);
+    else residByCat.set(key, [r]);
+  });
+  const byCategory = new Map<string, CategoryOffset>();
+  for (const [category, resid] of residByCat) {
+    const u = (resid.length / (resid.length + 8)) * medianOf(resid);
+    byCategory.set(category, { category, peers: resid.length, offset: Math.exp(u) });
   }
-  const byCategory = new Map<string, CategoryFit>();
-  for (const [category, ratios] of groups) {
-    if (ratios.length >= 3) byCategory.set(category, fitOf(category, ratios));
-  }
-  const sortedAll = [...all].sort((a, b) => a - b);
-  const lo = quantile(sortedAll, 0.05);
-  const hi = quantile(sortedAll, 0.95);
-  const winsorised = all.map((r) => Math.min(hi, Math.max(lo, r)));
-  return { byCategory, global: fitOf('All categories', winsorised) };
+  const sortedResid = [...allResid].sort((x, y) => x - y);
+  return {
+    peers: peers.length,
+    intercept: a,
+    slope: b,
+    t0,
+    residQ25: quantile(sortedResid, 0.25),
+    residQ75: quantile(sortedResid, 0.75),
+    byCategory,
+  };
 }
 
 // ---------------------------------------------------------------- valuation
@@ -236,31 +329,115 @@ export function ageInDays(listedAt: string | null, asOf: string): number | null 
 const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
 
 /**
- * Price one pre-token protocol. The base is its TVL times the fitted median
- * multiple of its category's launched peers; momentum scales it by half the
- * (clamped) seven-day TVL change, and maturity adds up to +30% across five
- * tracked years. The band re-prices the base at the peers' 25th and 75th
- * percentile multiples, so the spread a reader sees is the market's own
- * disagreement about the category, not a made-up error bar.
+ * Price one pre-token protocol. The base is the fitted curve read at its
+ * TVL, shifted by its category's shrunk offset; momentum scales it by half
+ * the (clamped) seven-day TVL change, and maturity adds up to +30% across
+ * five tracked years. The band re-prices the base at the fit's own 25th
+ * and 75th percentile residuals, so the spread a reader sees is how far
+ * launched peers actually landed from this curve's prices — the market's
+ * own disagreement, not a made-up error bar.
  */
-export function valueProtocol(p: Protocol, fits: { byCategory: Map<string, CategoryFit>; global: CategoryFit }, asOf: string): Valuation {
+export function valueProtocol(p: Protocol, fit: CurveFit, asOf: string): Valuation {
+  const cat = fit.byCategory.get(fitGroupOf(p.category));
+  const base = Math.exp(fit.intercept + fit.slope * Math.log(p.tvl_usd / fit.t0)) * (cat?.offset ?? 1);
+  const growth = clamp(p.change_7d ?? 0, -40, 40);
+  const momentumMult = 1 + growth / 200;
+  const ageDays = ageInDays(p.listed_at, asOf);
+  const maturityMult = ageDays === null ? 1 : 1 + 0.3 * (Math.min(ageDays, 1825) / 1825);
+  const price = (shift: number): number => Math.max(1, Math.round(base * shift * momentumMult * maturityMult));
+  return {
+    base,
+    catOffset: cat?.offset ?? 1,
+    catPeers: cat?.peers ?? 0,
+    momentumMult,
+    maturityMult,
+    ageDays,
+    implied: price(1),
+    impliedLow: price(Math.exp(fit.residQ25)),
+    impliedHigh: price(Math.exp(fit.residQ75)),
+    fitName: cat ? fitGroupOf(p.category) : 'All categories',
+  };
+}
+
+// ------------------------------------------------------------ calibration
+
+/** A market-cap/TVL multiple fit, the legacy model's unit. Kept for the calibration race below. */
+export interface CategoryFit {
+  category: string;
+  peers: number;
+  p25: number;
+  median: number;
+  p75: number;
+}
+
+/** The legacy pricing model this curve replaced, restated for the calibration race: TVL x category median market-cap/TVL multiple (overall winsorised fit under three peers), same adjustments. */
+function legacyFits(peers: Protocol[]): { byCategory: Map<string, CategoryFit>; global: CategoryFit } {
+  const groups = new Map<string, number[]>();
+  const all: number[] = [];
+  for (const p of peers) {
+    const ratio = p.mcap_usd! / p.tvl_usd;
+    const key = fitGroupOf(p.category);
+    const list = groups.get(key);
+    if (list) list.push(ratio);
+    else groups.set(key, [ratio]);
+    all.push(ratio);
+  }
+  const byCategory = new Map<string, CategoryFit>();
+  for (const [category, ratios] of groups) {
+    if (ratios.length >= 3) byCategory.set(category, fitOf(category, ratios));
+  }
+  const sortedAll = [...all].sort((a, b) => a - b);
+  const lo = quantile(sortedAll, 0.05);
+  const hi = quantile(sortedAll, 0.95);
+  const winsorised = all.map((r) => Math.min(hi, Math.max(lo, r)));
+  return { byCategory, global: fitOf('All categories', winsorised) };
+}
+
+function legacyPrice(p: Protocol, fits: { byCategory: Map<string, CategoryFit>; global: CategoryFit }, asOf: string): { implied: number; low: number; high: number } {
   const fit = fits.byCategory.get(fitGroupOf(p.category)) ?? fits.global;
   const growth = clamp(p.change_7d ?? 0, -40, 40);
   const momentumMult = 1 + growth / 200;
   const ageDays = ageInDays(p.listed_at, asOf);
   const maturityMult = ageDays === null ? 1 : 1 + 0.3 * (Math.min(ageDays, 1825) / 1825);
   const price = (multiple: number): number => Math.max(1, Math.round(p.tvl_usd * multiple * momentumMult * maturityMult));
+  return { implied: price(fit.median), low: price(fit.p25), high: price(fit.p75) };
+}
+
+/**
+ * Grade both models the only honest way available on a frozen snapshot:
+ * leave-one-out over the launched peers. Each peer's market cap is hidden,
+ * both models are refitted on the remaining peers only — no quantity the
+ * priced peer influenced is used to price it — and the prediction is
+ * compared with the truth. This is retrospective calibration on protocols
+ * that did launch; it measures how faithfully each model reproduces the
+ * market's own pricing, not a promise about protocols that have not.
+ */
+export function calibrate(protocols: Protocol[], asOf: string): Calibration {
+  const peers = launchedPeers(protocols);
+  const curveErr: number[] = [];
+  const ratioErr: number[] = [];
+  let curveIn2 = 0, ratioIn2 = 0, curveInBand = 0, ratioInBand = 0;
+  for (const target of peers) {
+    const rest = peers.filter((p) => p.slug !== target.slug);
+    const actual = target.mcap_usd!;
+    const cv = valueProtocol(target, fitCurve(rest), asOf);
+    curveErr.push(Math.abs(Math.log(cv.implied / actual)));
+    if (Math.abs(Math.log(cv.implied / actual)) <= Math.log(2)) curveIn2++;
+    if (actual >= cv.impliedLow && actual <= cv.impliedHigh) curveInBand++;
+    const lg = legacyPrice(target, legacyFits(rest), asOf);
+    ratioErr.push(Math.abs(Math.log(lg.implied / actual)));
+    if (Math.abs(Math.log(lg.implied / actual)) <= Math.log(2)) ratioIn2++;
+    if (actual >= lg.low && actual <= lg.high) ratioInBand++;
+  }
+  const score = (errs: number[], in2: number, inBand: number): ModelScore => ({
+    medAbsLogErr: medianOf(errs),
+    within2x: in2 / peers.length,
+    bandCoverage: inBand / peers.length,
+  });
   return {
-    multiple: fit.median,
-    multipleLow: fit.p25,
-    multipleHigh: fit.p75,
-    momentumMult,
-    maturityMult,
-    ageDays,
-    implied: price(fit.median),
-    impliedLow: price(fit.p25),
-    impliedHigh: price(fit.p75),
-    fitName: fit.category,
+    peers: peers.length,
+    curve: score(curveErr, curveIn2, curveInBand),
+    ratio: score(ratioErr, ratioIn2, ratioInBand),
   };
 }
 
@@ -382,13 +559,13 @@ export interface Built {
 
 /** Rank every protocol that records no token by its fitted implied value, and assemble the dashboard's data. */
 export function buildRadar(snapshot: Snapshot): Built {
-  const fits = peerMultiples(snapshot.protocols);
+  const fit = fitCurve(snapshot.protocols);
   const watch = new Set(snapshot.watchlist);
   const aside = snapshot.protocols.filter((p) => recordsNoToken(p) && isTradedProduct(p));
   const scored: RadarRow[] = [];
   for (const p of snapshot.protocols) {
     if (!recordsNoToken(p) || isTradedProduct(p)) continue;
-    const v = valueProtocol(p, fits, snapshot.as_of);
+    const v = valueProtocol(p, fit, snapshot.as_of);
     scored.push({
       rank: 0,
       slug: p.slug,
@@ -427,7 +604,7 @@ export function buildRadar(snapshot: Snapshot): Built {
       ratio: Math.round(((p.mcap_usd ?? 0) / p.tvl_usd) * 10_000) / 10_000,
     }));
 
-  const fitList = [...fits.byCategory.values()].sort((a, b) => b.peers - a.peers).slice(0, 18);
+  const fitList = [...fit.byCategory.values()].sort((a, b) => b.peers - a.peers).slice(0, 18);
   const data: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -454,7 +631,8 @@ export function buildRadar(snapshot: Snapshot): Built {
     })(),
     totalImplied: scored.reduce((sum, r) => sum + r.implied, 0),
     fits: fitList,
-    globalFit: fits.global,
+    globalFit: { peers: fit.peers, slope: fit.slope, t0: fit.t0, residQ25: fit.residQ25, residQ75: fit.residQ75 },
+    calibration: calibrate(snapshot.protocols, snapshot.as_of),
     rows: scored,
     live,
   };
