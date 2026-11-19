@@ -1,5 +1,12 @@
 # Token Launch Radar
 
+[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/mr1229751/token-launch-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/mr1229751/token-launch-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+
+An entry to make.fun's [token-radar-01 bounty](https://make.fun/bounty/token-radar-01)
+("Build the best token launch radar").
+
 A program that reads a sealed snapshot of the protocol universe (DefiLlama
 data, frozen by the house) and builds a radar for token launches that have
 not happened yet: every protocol that records no token, ranked by what its
