@@ -20,6 +20,18 @@
 
 <p class="strip" id="modelStrip"></p>
 
+<section class="sandbox" id="sandbox">
+  <div class="sb-head">
+    <h2>Model sandbox</h2>
+    <span class="sb-note" id="sbNote">The fitted multiples are the market's; the two adjustments are the radar's. Move them and the board re-prices in the page — the submitted board (board.json) never changes. Pin any three protocols to compare them, export the board as CSV, or press <b>/</b> to jump to a protocol.</span>
+    <button class="closebtn" id="sbReset" type="button" hidden>Reset to the model</button>
+  </div>
+  <div class="sb-grid">
+    <label class="sb-ctl">Momentum weight <input type="range" id="sbW" min="0" max="100" step="5" value="50"><b id="sbWVal">50%</b><span>how much of the 7-day TVL move (clamped at +/-40%) moves the price</span></label>
+    <label class="sb-ctl">Maturity bonus <input type="range" id="sbB" min="0" max="60" step="5" value="30"><b id="sbBVal">+30%</b><span>added across five tracked years with no token</span></label>
+  </div>
+</section>
+
 <section class="controls" id="controls">
   <label class="ctl grow">Search <input type="search" id="q" placeholder="protocol name or slug"></label>
   <label class="ctl">Category <select id="cat"></select></label>
@@ -30,11 +42,14 @@
     <option value="50000000">$50M+</option><option value="100000000">$100M+</option>
     <option value="500000000">$500M+</option><option value="1000000000">$1B+</option>
   </select></label>
+  <button class="closebtn" id="paletteBtn" type="button">Jump to protocol ( / )</button>
+  <button class="closebtn" id="csvBtn" type="button">Export CSV</button>
   <span class="ctl count" id="rowCount"></span>
 </section>
 
 <main>
   <section class="detail" id="detail" hidden></section>
+  <section class="detail compare" id="compare" hidden></section>
 
   <table class="board" id="board">
     <thead><tr>
@@ -42,7 +57,7 @@
       <th data-sort="category">Category</th><th>Chains</th>
       <th data-sort="tvl_usd" class="num">TVL</th><th data-sort="change_7d" class="num">7d</th>
       <th data-sort="ageDays" class="num">Age</th><th data-sort="multiple" class="num">Peer x</th>
-      <th data-sort="implied" class="num">Implied value</th><th class="num">Peer band</th>
+      <th data-sort="implied" class="num">Implied value</th><th class="num">Peer band</th><th></th>
     </tr></thead>
     <tbody id="boardBody"></tbody>
   </table>
@@ -65,6 +80,15 @@
     <div class="fits-wrap"><table class="fits" id="asideTable"></table></div>
   </section>
 </main>
+
+<div class="tray" id="tray" hidden></div>
+
+<div class="palette" id="palette" hidden>
+  <div class="palette-box">
+    <input type="search" id="palInput" placeholder="Type a protocol name or slug, Enter opens the first match">
+    <div id="palList"></div>
+  </div>
+</div>
 
 <footer>
   <p id="footSource"></p>

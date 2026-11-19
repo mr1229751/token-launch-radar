@@ -79,7 +79,37 @@ function renderMethod() {
 
 // ------------------------------------------------------------- board
 
-const state = { sortKey: 'rank', sortDir: 1, selected: null };
+const state = { sortKey: 'rank', sortDir: 1, selected: null, pins: [], sbW: 0.5, sbB: 0.30 };
+
+// ------------------------------------------------------------- sandbox
+
+// The sandbox re-prices the board in the page under the reader's own
+// momentum weight and maturity bonus, using the same formula the program
+// fits with: implied = TVL x fitted multiple x momentum x maturity. At the
+// model's own settings (50%, +30%) it returns the submitted board exactly;
+// board.json itself is never touched.
+function sandboxActive() {
+  return state.sbW !== 0.5 || state.sbB !== 0.30;
+}
+
+function viewOf(r) {
+  if (!sandboxActive()) return { implied: r.implied, low: r.impliedLow, high: r.impliedHigh };
+  const growth = Math.max(-40, Math.min(40, r.change_7d ?? 0));
+  const mom = 1 + (growth / 100) * state.sbW;
+  const mat = r.ageDays === null ? 1 : 1 + state.sbB * (Math.min(r.ageDays, 1825) / 1825);
+  const imp = Math.max(1, Math.round(r.tvl_usd * r.multiple * mom * mat));
+  const k = r.implied > 0 ? imp / r.implied : 1;
+  return { implied: imp, low: Math.round(r.impliedLow * k), high: Math.round(r.impliedHigh * k) };
+}
+
+function renderSandbox() {
+  $('sbWVal').textContent = Math.round(state.sbW * 100) + '%';
+  $('sbBVal').textContent = '+' + Math.round(state.sbB * 100) + '%';
+  $('sbReset').hidden = !sandboxActive();
+  $('sbNote').innerHTML = sandboxActive()
+    ? `<b>Sandbox pricing is on</b> — ranks and values below are re-priced in this page at momentum ${Math.round(state.sbW * 100)}% and maturity +${Math.round(state.sbB * 100)}%. The submitted board (board.json) is unchanged; reset returns to it.`
+    : `The fitted multiples are the market's; the two adjustments are the radar's. Move them and the board re-prices in the page — the submitted board (board.json) never changes. Pin any three protocols to compare them, export the board as CSV, or press <b>/</b> to jump to a protocol.`;
+}
 
 function filteredRows() {
   const q = $('q').value.trim().toLowerCase();
@@ -91,15 +121,19 @@ function filteredRows() {
     (cat === '' || (r.category ?? 'Uncategorised') === cat) &&
     (chain === '' || r.chains.includes(chain)) &&
     (!watchOnly || r.watchlist) &&
-    r.implied >= minImp &&
+    viewOf(r).implied >= minImp &&
     (q === '' || r.name.toLowerCase().includes(q) || r.slug.includes(q)));
 }
 
 function sortedRows(rows) {
+  // In sandbox mode the default order is the sandbox ranking itself.
+  if (sandboxActive() && state.sortKey === 'rank') {
+    return [...rows].sort((a, b) => viewOf(b).implied - viewOf(a).implied);
+  }
   const key = state.sortKey;
   const dir = state.sortDir;
   const val = (r) => {
-    const v = r[key];
+    const v = key === 'implied' ? viewOf(r).implied : r[key];
     return v === null || v === undefined ? -Infinity : v;
   };
   return [...rows].sort((a, b) => {
@@ -111,10 +145,11 @@ function sortedRows(rows) {
 
 function renderBoard() {
   const rows = sortedRows(filteredRows());
-  $('rowCount').textContent = `${rows.length} of ${R.rows.length} protocols`;
-  $('boardBody').innerHTML = rows.map((r) => `
+  const sb = sandboxActive();
+  $('rowCount').textContent = `${rows.length} of ${R.rows.length} protocols${sb ? ' · sandbox pricing' : ''}`;
+  $('boardBody').innerHTML = rows.map((r, i) => { const v = viewOf(r); return `
     <tr data-slug="${esc(r.slug)}"${state.selected === r.slug ? ' class="selected"' : ''}>
-      <td class="rank">${r.rank}</td>
+      <td class="rank">${sb ? i + 1 : r.rank}</td>
       <td class="name"><b>${esc(r.name)}</b>${r.watchlist ? '<span class="badge">WATCHLIST</span>' : ''}<span class="slug">${esc(r.slug)}</span></td>
       <td>${esc(r.category ?? 'Uncategorised')}</td>
       <td class="chains">${esc(r.chains.slice(0, 3).join(', '))}${r.chains.length > 3 ? ` +${r.chains.length - 3}` : ''}</td>
@@ -122,12 +157,125 @@ function renderBoard() {
       <td class="num">${fmtPct(r.change_7d)}</td>
       <td class="num">${fmtAge(r.ageDays)}</td>
       <td class="num money">${r.multiple.toFixed(2)}x${r.fitName === 'All categories' ? '<span class="overall">OVERALL</span>' : ''}</td>
-      <td class="num imp">${fmtMoney(r.implied)}</td>
-      <td class="num band">${fmtMoney(r.impliedLow)} – ${fmtMoney(r.impliedHigh)}</td>
-    </tr>`).join('');
+      <td class="num imp">${fmtMoney(v.implied)}</td>
+      <td class="num band">${fmtMoney(v.low)} – ${fmtMoney(v.high)}</td>
+      <td><button class="pinbtn${state.pins.includes(r.slug) ? ' on' : ''}" data-pin="${esc(r.slug)}" type="button">${state.pins.includes(r.slug) ? 'Pinned' : 'Pin'}</button></td>
+    </tr>`; }).join('');
   for (const tr of $('boardBody').querySelectorAll('tr')) {
     tr.addEventListener('click', () => openDetail(tr.dataset.slug));
   }
+  for (const b of $('boardBody').querySelectorAll('[data-pin]')) {
+    b.addEventListener('click', (e) => { e.stopPropagation(); togglePin(b.dataset.pin); });
+  }
+}
+
+// ------------------------------------------------------------- compare
+
+function togglePin(slug) {
+  const i = state.pins.indexOf(slug);
+  if (i >= 0) state.pins.splice(i, 1);
+  else {
+    if (state.pins.length >= 3) state.pins.shift();
+    state.pins.push(slug);
+  }
+  renderTray();
+  renderBoard();
+  if (!$('compare').hidden) openCompare();
+}
+
+function renderTray() {
+  const t = $('tray');
+  if (state.pins.length === 0) { t.hidden = true; t.innerHTML = ''; return; }
+  const names = state.pins.map((s) => { const r = R.rows.find((x) => x.slug === s); return r ? esc(r.name) : s; });
+  t.hidden = false;
+  t.innerHTML = `<span class="tray-label">Pinned for comparison:</span> ${names.join(' · ')}
+    <button class="closebtn" id="trayCompare" type="button" ${state.pins.length < 2 ? 'disabled' : ''}>Compare ${state.pins.length}</button>
+    <button class="closebtn" id="trayClear" type="button">Clear</button>`;
+  $('trayClear').addEventListener('click', () => { state.pins = []; renderTray(); renderBoard(); closeCompare(); });
+  const cmp = $('trayCompare');
+  if (cmp) cmp.addEventListener('click', openCompare);
+}
+
+/** The farm plan's closing line carries its own totals; read them back. */
+function planTotals(r) {
+  const last = r.farm_steps[r.farm_steps.length - 1] || '';
+  const fees = last.match(/about (\$[\d,]+) in fees/);
+  const weeks = last.match(/over (\d+) weeks/);
+  const cap = last.match(/plus (\$[\d,]+) of working capital/);
+  return { fees: fees ? fees[1] : '—', weeks: weeks ? weeks[1] : '—', cap: cap ? cap[1] : '—' };
+}
+
+function openCompare() {
+  const rows = state.pins.map((s) => R.rows.find((x) => x.slug === s)).filter(Boolean);
+  if (rows.length < 2) return;
+  const d = $('compare');
+  d.hidden = false;
+  const cell = (fn) => rows.map((r) => `<td>${fn(r)}</td>`).join('');
+  const num = (fn) => rows.map((r) => `<td class="num">${fn(r)}</td>`).join('');
+  d.innerHTML = `
+    <div class="detail-head">
+      <div><h2>Compare — ${rows.map((r) => esc(r.name)).join(' vs ')}</h2>
+      <span class="sub">Side by side on the radar's own numbers: the fitted price, the market band around it, and what farming each one costs.</span></div>
+      <button class="closebtn" id="compareClose" type="button">Close</button>
+    </div>
+    <div class="fits-wrap"><table class="fits cmp">
+      <tr><th></th>${rows.map((r) => `<th>#${r.rank} ${esc(r.name)}${r.watchlist ? '<span class="badge">WATCHLIST</span>' : ''}</th>`).join('')}</tr>
+      <tr><td>Category</td>${cell((r) => esc(r.category ?? 'Uncategorised'))}</tr>
+      <tr><td>Chains</td>${cell((r) => esc(r.chains.join(', ') || 'none recorded'))}</tr>
+      <tr><td>Total value locked</td>${num((r) => fmtFull(r.tvl_usd))}</tr>
+      <tr><td>TVL change, 7d</td>${num((r) => (r.change_7d === null ? 'unreported' : r.change_7d.toFixed(2) + '%'))}</tr>
+      <tr><td>Age with no token</td>${num((r) => fmtAge(r.ageDays))}</tr>
+      <tr><td>Peer multiple</td>${num((r) => r.multiple.toFixed(3) + 'x (' + esc(r.fitName) + ' fit)')}</tr>
+      <tr><td>Implied value</td>${num((r) => '<b>' + fmtFull(r.implied) + '</b>')}</tr>
+      <tr><td>Peer band (P25 – P75)</td>${num((r) => fmtFull(r.impliedLow) + ' – ' + fmtFull(r.impliedHigh))}</tr>
+      <tr><td>Farm plan</td>${cell((r) => { const t = planTotals(r); return `${r.farm_steps.length} steps · about ${t.fees} in fees over ${t.weeks} weeks, plus ${t.cap} of working capital`; })}</tr>
+      <tr><td>Core move</td>${cell((r) => esc(r.farm_steps[1] || ''))}</tr>
+    </table></div>`;
+  $('compareClose').addEventListener('click', closeCompare);
+  d.scrollIntoView({ block: 'nearest' });
+}
+
+function closeCompare() {
+  $('compare').hidden = true;
+}
+
+// ------------------------------------------------------------- export + palette
+
+function exportCsv() {
+  const rows = sortedRows(filteredRows());
+  const head = 'rank,name,slug,category,chains,tvl_usd,change_7d_pct,age_days,peer_multiple,implied_value_usd,band_low_usd,band_high_usd,watchlist';
+  const q = (s) => `"${String(s).replace(/"/g, '""')}"`;
+  const lines = rows.map((r) => [r.rank, q(r.name), r.slug, q(r.category ?? 'Uncategorised'), q(r.chains.join(' ')),
+    r.tvl_usd, r.change_7d ?? '', r.ageDays ?? '', r.multiple.toFixed(4), r.implied, r.impliedLow, r.impliedHigh, r.watchlist ? 1 : 0].join(','));
+  const blob = new Blob([head + '\n' + lines.join('\n') + '\n'], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'token-launch-radar-board.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function paletteMatches() {
+  const q = $('palInput').value.trim().toLowerCase();
+  const hits = R.rows.filter((r) => q === '' || r.name.toLowerCase().includes(q) || r.slug.includes(q)).slice(0, 8);
+  $('palList').innerHTML = hits.map((r) =>
+    `<button class="pal-row" data-slug="${esc(r.slug)}" type="button"><b>#${r.rank} ${esc(r.name)}</b><span>${fmtMoney(r.implied)} implied · ${esc(r.category ?? 'Uncategorised')}</span></button>`).join('')
+    || '<p class="pal-none">No protocol matches.</p>';
+  for (const b of $('palList').querySelectorAll('[data-slug]')) {
+    b.addEventListener('click', () => { closePalette(); openDetail(b.dataset.slug); });
+  }
+  return hits;
+}
+
+function openPalette() {
+  $('palette').hidden = false;
+  $('palInput').value = '';
+  paletteMatches();
+  $('palInput').focus();
+}
+
+function closePalette() {
+  $('palette').hidden = true;
 }
 
 // ------------------------------------------------------------- detail
@@ -216,28 +364,56 @@ function fillFilters() {
 
 function applyHash() {
   // Screenshot staging and shareable views: #detail=<slug>, #cat=<category>,
-  // #chain=<chain>, #watch=1, #q=<text> preset the page on load.
+  // #chain=<chain>, #watch=1, #q=<text>, #compare=<slug,slug,slug> preset
+  // the page on load.
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.get('cat')) $('cat').value = h.get('cat');
   if (h.get('chain')) $('chain').value = h.get('chain');
   if (h.get('watch') === '1') $('watchOnly').checked = true;
   if (h.get('q')) $('q').value = h.get('q');
+  if (h.get('compare')) {
+    state.pins = h.get('compare').split(',').filter((s) => R.rows.some((r) => r.slug === s)).slice(0, 3);
+    renderTray();
+  }
   renderBoard();
+  if (h.get('compare') && state.pins.length >= 2) openCompare();
   if (h.get('detail')) openDetail(h.get('detail'));
 }
 
 function init() {
   renderStats();
   renderMethod();
+  renderSandbox();
   fillFilters();
   renderLive();
   renderAside();
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closeDetail(); closePalette(); }
+    if ((e.key === '/' || (e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey))) &&
+        !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) {
+      e.preventDefault();
+      openPalette();
+    }
+  });
   $('footSource').textContent = `Data: ${R.source}. The board is regenerated from that sealed snapshot on every run of the program; nothing here is fetched live.`;
   for (const id of ['q', 'cat', 'chain', 'watchOnly', 'minImp']) {
     $(id).addEventListener('input', renderBoard);
     $(id).addEventListener('change', renderBoard);
   }
+  $('sbW').addEventListener('input', () => { state.sbW = Number($('sbW').value) / 100; renderSandbox(); renderBoard(); });
+  $('sbB').addEventListener('input', () => { state.sbB = Number($('sbB').value) / 100; renderSandbox(); renderBoard(); });
+  $('sbReset').addEventListener('click', () => {
+    state.sbW = 0.5; state.sbB = 0.30;
+    $('sbW').value = '50'; $('sbB').value = '30';
+    renderSandbox(); renderBoard();
+  });
+  $('csvBtn').addEventListener('click', exportCsv);
+  $('paletteBtn').addEventListener('click', openPalette);
+  $('palInput').addEventListener('input', paletteMatches);
+  $('palInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { const hits = paletteMatches(); if (hits.length) { closePalette(); openDetail(hits[0].slug); } }
+  });
+  $('palette').addEventListener('click', (e) => { if (e.target === $('palette')) closePalette(); });
   for (const th of document.querySelectorAll('table.board th[data-sort]')) {
     th.addEventListener('click', () => {
       const key = th.dataset.sort;

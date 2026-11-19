@@ -49,12 +49,17 @@ MAKEFUN_OUTPUT_DIR=out node main.ts --input <path-to-snapshot.json>
 ```
 
 Then open `out/dashboard/index.html` in a browser. The page renders with no
-network: it reads only the `data.js` the program wrote beside it.
+network: it reads only the `data.js` the program wrote beside it. On the
+page: sort and filter the board, open any protocol's detail, re-price the
+whole board in the model sandbox (your own momentum weight and maturity
+bonus — the submitted board never changes), pin any three protocols to
+compare them side by side, export the board as CSV, or press `/` to jump
+straight to a protocol.
 
 ## Layout
 
 - `main.ts` — the program: input, outputs, gate self-check, dossier.
 - `lib/model.ts` — snapshot parsing, the fitted value model, farm plans.
 - `dashboard/` — the page: `index.html`, `app.css`, `app.js`.
-- `screenshots/` — the board, a detail view, and a filtered view.
+- `screenshots/` — the board, a detail view, a filtered view, and a comparison.
 - `vendor/makefun-board.ts` — the house dossier library, byte for byte.
