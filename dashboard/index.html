@@ -18,11 +18,7 @@
   <div class="mast-stats" id="mastStats"></div>
 </header>
 
-<section class="method" id="method">
-  <h2>How the radar prices a protocol with no token</h2>
-  <p id="methodText"></p>
-  <div class="fits-wrap"><table class="fits" id="fitsTable"></table></div>
-</section>
+<p class="strip" id="modelStrip"></p>
 
 <section class="controls" id="controls">
   <label class="ctl grow">Search <input type="search" id="q" placeholder="protocol name or slug"></label>
@@ -51,10 +47,22 @@
     <tbody id="boardBody"></tbody>
   </table>
 
+  <section class="method" id="method">
+    <h2>How the radar prices a protocol with no token</h2>
+    <p id="methodText"></p>
+    <div class="fits-wrap"><table class="fits" id="fitsTable"></table></div>
+  </section>
+
   <section class="live">
     <h2>Already trading — the peers the model is fitted on</h2>
     <p class="live-note">These protocols already have a token, so they are not on the board. Their market-cap-to-TVL ratios, grouped by category, are what prices the board above.</p>
     <div class="fits-wrap"><table class="fits" id="liveTable"></table></div>
+  </section>
+
+  <section class="live">
+    <h2>Set aside — records the radar does not rank, and why</h2>
+    <p class="live-note">Every record below records no token of its own in the snapshot, and none of them is ranked: each is a product of a token that already trades, or an exchange's own record. The rule that caught each one is stated beside it, so the exclusion can be audited, not just trusted.</p>
+    <div class="fits-wrap"><table class="fits" id="asideTable"></table></div>
   </section>
 </main>
 

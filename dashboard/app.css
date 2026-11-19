@@ -45,7 +45,18 @@ h1 { margin: 0; font-size: 27px; letter-spacing: .2px; }
 }
 .stat b { display: block; font-family: var(--mono); font-size: 19px; color: var(--signal); font-weight: 600; }
 .stat i { font-style: normal; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
-.method { padding: 16px 28px 4px; max-width: 1180px; }
+.strip {
+  margin: 0; padding: 10px 28px; color: var(--muted); font-size: 14px;
+  border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.strip b { color: var(--signal); font-weight: 600; }
+.method { padding: 16px 0 4px; max-width: 1180px; }
+.closebtn {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 13px; font-size: 13px; cursor: pointer; flex: none;
+}
+.closebtn:hover { border-color: var(--signal-dim); color: var(--signal); }
+td .overall { color: var(--amber); font-size: 11px; display: block; letter-spacing: .4px; }
 .method h2, .live h2 { font-size: 17px; margin: 6px 0 6px; }
 .method p { color: var(--muted); margin: 0 0 10px; max-width: 1020px; }
 .method p b { color: var(--text); font-weight: 600; }

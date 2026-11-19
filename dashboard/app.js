@@ -53,16 +53,20 @@ function renderStats() {
 
 function renderMethod() {
   const g = R.globalFit;
+  const sa = R.setAside;
+  $('modelStrip').innerHTML =
+    `Priced as <b>TVL x the median market-cap/TVL multiple of launched peers</b> in the same line of work, ` +
+    `adjusted for seven-day momentum and maturity. The full method, the fitted multiples and the records set aside are below the board.`;
   $('methodText').innerHTML =
     `For every category, the radar fits the <b>market-cap-to-TVL multiples of the protocols whose token already trades</b> ` +
-    `(${g.peers} launched peers overall; median <b>${g.median.toFixed(2)}x</b>, peer band ${g.p25.toFixed(2)}x to ${g.p75.toFixed(2)}x). ` +
-    `A pre-token protocol is priced as <b>TVL x its category's median multiple</b>, adjusted by its own seven-day TVL momentum ` +
-    `(half the move, clamped at +/-40%) and by its maturity (up to +30% across five tracked years with no token). ` +
-    `The band beside each value re-prices it at the category's 25th and 75th percentile multiples: the market's own spread, not an error bar. ` +
+    `(${g.peers} launched peers overall; median <b>${g.median.toFixed(2)}x</b>, peer band ${g.p25.toFixed(2)}x to ${g.p75.toFixed(2)}x, winsorised at the 5th-95th percentile so one mispriced micro-cap cannot stretch it). ` +
+    `A pre-token protocol is priced as <b>TVL x its category's median multiple where that category has launched peers — the overall median otherwise</b> (the board marks those rows "overall"), ` +
+    `adjusted by its own seven-day TVL momentum (half the move, clamped at +/-40%) and by its maturity (up to +30% across five tracked years with no token). ` +
+    `The band beside each value re-prices it at the fit's 25th and 75th percentile multiples: the market's own spread, not an error bar. ` +
     `No protocol is named in the model; run it on a newer snapshot and it prices that universe instead. ` +
-    `Every farm plan on the board is five steps written from the protocol's category, main chain and size: set up, put working capital to work, hold a weekly rhythm, spread or deepen, then watch for the snapshot and claim — each step states what it costs in dollars and how long it takes. ` +
-    `The radar also sets aside <b>${R.setAside.count} records that record no token of their own but are wrapped, staked, bridged or exchange products of one that already trades</b> ` +
-    `(${R.setAside.examples.map(esc).join(', ')}): their value already trades under the parent token, so they are not launches and are not ranked.`;
+    `Every farm plan on the board is five steps written from the protocol's category, main chain and size: set up, put working capital to work, hold a weekly rhythm, spread or deepen, then watch for the snapshot and claim — each step states what it costs in dollars and how long it takes, and the closing total is the sum of the plan's own itemised costs. ` +
+    `The radar sets aside <b>${sa.products.count} wrapped, staked or bridged products of a token that already trades</b> (${sa.products.examples.map(esc).join(', ')}): their value already trades under the parent token. ` +
+    `It also sets aside <b>${sa.exchanges.count} exchange records</b> (${sa.exchanges.examples.map(esc).join(', ')}): an exchange's own listing is not a protocol launch. Every set-aside is listed with its reason below.`;
   const head = '<tr><th>Category</th><th class="num">Launched peers</th><th class="num">P25</th><th class="num">Median</th><th class="num">P75</th></tr>';
   const shown = R.fits.slice(0, 8);
   const body = shown.map((f) =>
@@ -117,22 +121,22 @@ function renderBoard() {
       <td class="num money">${fmtMoney(r.tvl_usd)}</td>
       <td class="num">${fmtPct(r.change_7d)}</td>
       <td class="num">${fmtAge(r.ageDays)}</td>
-      <td class="num money">${r.multiple.toFixed(2)}x</td>
+      <td class="num money">${r.multiple.toFixed(2)}x${r.fitName === 'All categories' ? '<span class="overall">OVERALL</span>' : ''}</td>
       <td class="num imp">${fmtMoney(r.implied)}</td>
       <td class="num band">${fmtMoney(r.impliedLow)} – ${fmtMoney(r.impliedHigh)}</td>
     </tr>`).join('');
   for (const tr of $('boardBody').querySelectorAll('tr')) {
-    tr.addEventListener('click', () => openDetail(tr.dataset.slug, true));
+    tr.addEventListener('click', () => openDetail(tr.dataset.slug));
   }
 }
 
 // ------------------------------------------------------------- detail
 
-function openDetail(slug, scroll) {
+function openDetail(slug) {
   const r = R.rows.find((x) => x.slug === slug);
   if (!r) return;
   state.selected = slug;
-  const fit = R.fits.find((f) => f.category === (r.category ?? '')) || R.globalFit;
+  const fit = R.fits.find((f) => f.category === r.fitName) || R.globalFit;
   const d = $('detail');
   d.hidden = false;
   d.innerHTML = `
@@ -142,13 +146,14 @@ function openDetail(slug, scroll) {
         <span class="sub">${esc(r.slug)} · ${esc(r.category ?? 'Uncategorised')} · tracked since ${r.listed_at ?? 'an unrecorded date'}</span>
       </div>
       <div class="detail-imp"><b>${fmtFull(r.implied)}</b><i>implied value if it launched today</i></div>
+      <button class="closebtn" id="detailClose" type="button">Close</button>
     </div>
     <div class="detail-grid">
       <div>
         <h3>How the value is built</h3>
         <table class="breakdown">
           <tr><td>Total value locked (snapshot)</td><td class="num">${fmtFull(r.tvl_usd)}</td></tr>
-          <tr><td>Peer multiple (${fit.category === 'All categories' ? `overall median of ${fit.peers} launched peers — ${esc(r.category ?? 'this category')} has too few launched peers to fit alone` : `median of ${fit.peers} launched ${esc(fit.category)} peers`})</td><td class="num">x ${r.multiple.toFixed(3)}</td></tr>
+          <tr><td>Peer multiple (${fit.category === 'All categories' ? `overall median of ${fit.peers} launched peers — ${esc(r.category ?? 'this category')} has too few launched peers to fit alone` : `median of ${fit.peers} launched ${esc(fit.category)} peers${fit.category !== (r.category ?? '') ? ` — ${esc(r.category ?? '')} prices under the shared ${esc(fit.category)} fit` : ''}`})</td><td class="num">x ${r.multiple.toFixed(3)}</td></tr>
           <tr><td>Seven-day momentum (${r.change_7d === null ? 'unreported' : r.change_7d.toFixed(2) + '%'}, half weight)</td><td class="num">x ${r.momentumMult.toFixed(3)}</td></tr>
           <tr><td>Maturity (${fmtAge(r.ageDays)} tracked, no token)</td><td class="num">x ${r.maturityMult.toFixed(3)}</td></tr>
           <tr class="total"><td>Implied value</td><td class="num">${fmtFull(r.implied)}</td></tr>
@@ -159,7 +164,7 @@ function openDetail(slug, scroll) {
           <dt>Chains</dt><dd>${esc(r.chains.join(', ') || 'none recorded')}</dd>
           <dt>TVL change, 7d</dt><dd>${r.change_7d === null ? 'unreported' : r.change_7d.toFixed(2) + '%'}</dd>
           <dt>Token</dt><dd>none recorded in the snapshot</dd>
-          <dt>Watchlist</dt><dd>${r.watchlist ? 'yes — on the house list, at or above the ' + fmtMoney(R.floor_usd) + ' floor' : 'not on the house list (it also applies parent-protocol rules the snapshot does not carry); the radar ranks it anyway'}</dd>
+          <dt>Watchlist</dt><dd>${r.watchlist ? 'yes — on the house list, at or above the ' + fmtMoney(R.floor_usd) + ' floor' : 'not on the house list — the house list also applies parent-protocol rules the snapshot does not carry; the radar ranks it anyway'}</dd>
         </dl>
       </div>
       <div>
@@ -167,8 +172,14 @@ function openDetail(slug, scroll) {
         <ol class="steps">${r.farm_steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>
       </div>
     </div>`;
+  $('detailClose').addEventListener('click', closeDetail);
   renderBoardSelection();
-  if (scroll) d.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeDetail() {
+  $('detail').hidden = true;
+  state.selected = null;
+  renderBoardSelection();
 }
 
 function renderBoardSelection() {
@@ -185,6 +196,13 @@ function renderLive() {
     `<tr><td>${esc(p.name)}</td><td>${esc(p.symbol ?? '—')}</td><td>${esc(p.category ?? 'Uncategorised')}</td>` +
     `<td class="num">${fmtMoney(p.tvl_usd)}</td><td class="num">${fmtMoney(p.mcap_usd)}</td><td class="num">${p.ratio.toFixed(2)}x</td></tr>`).join('');
   $('liveTable').innerHTML = head + body;
+}
+
+function renderAside() {
+  const head = '<tr><th>Record</th><th>Category</th><th class="num">TVL</th><th>Why it is not ranked</th></tr>';
+  const body = R.setAside.rows.map((x) =>
+    `<tr><td>${esc(x.name)}</td><td>${esc(x.category ?? 'Uncategorised')}</td><td class="num">${fmtMoney(x.tvl_usd)}</td><td>${esc(x.reason)}</td></tr>`).join('');
+  $('asideTable').innerHTML = head + body;
 }
 
 // ------------------------------------------------------------- wiring
@@ -205,7 +223,7 @@ function applyHash() {
   if (h.get('watch') === '1') $('watchOnly').checked = true;
   if (h.get('q')) $('q').value = h.get('q');
   renderBoard();
-  if (h.get('detail')) openDetail(h.get('detail'), false);
+  if (h.get('detail')) openDetail(h.get('detail'));
 }
 
 function init() {
@@ -213,6 +231,8 @@ function init() {
   renderMethod();
   fillFilters();
   renderLive();
+  renderAside();
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
   $('footSource').textContent = `Data: ${R.source}. The board is regenerated from that sealed snapshot on every run of the program; nothing here is fetched live.`;
   for (const id of ['q', 'cat', 'chain', 'watchOnly', 'minImp']) {
     $(id).addEventListener('input', renderBoard);

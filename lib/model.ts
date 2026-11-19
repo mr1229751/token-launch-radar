@@ -57,6 +57,8 @@ export interface Valuation {
   implied: number;
   impliedLow: number;
   impliedHigh: number;
+  /** The fit that priced this row: a category (or shared) fit's name, or 'All categories' for the overall fallback. */
+  fitName: string;
 }
 
 export interface BoardRow {
@@ -94,7 +96,11 @@ export interface RadarData {
   source: string;
   floor_usd: number;
   counts: { protocols: number; preToken: number; watchlist: number; rows: number; live: number };
-  setAside: { count: number; examples: string[] };
+  setAside: {
+    products: { count: number; examples: string[] };
+    exchanges: { count: number; examples: string[] };
+    rows: { name: string; category: string | null; tvl_usd: number; reason: string }[];
+  };
   totalImplied: number;
   fits: CategoryFit[];
   globalFit: CategoryFit;
@@ -135,11 +141,21 @@ const VERSION_SUFFIX = /\s(V\d+(\.\d+)?|v\d+(\.\d+)?|\d+\.\d+)$/;
  * product categories, a version marker or a wrapped/staked word in the
  * name, or an exchange's name at the front of it.
  */
+/** Why a record is set aside, in the page's own words, or null when it is a genuine launch candidate. */
+export function tradedProductReason(p: Protocol): string | null {
+  if (p.category === 'CEX' || EXCHANGE_NAMES.some((x) => p.name === x || p.name.startsWith(`${x} `))) {
+    return 'exchange record — an exchange\u2019s own listing is not a protocol launch';
+  }
+  if (p.category !== null && PRODUCT_CATEGORIES.has(p.category)) {
+    return `${p.category.toLowerCase()} product of a token that already trades`;
+  }
+  if (/\b(wrapped|staked|staking)\b/i.test(p.name)) return 'wrapped or staked product, by its name';
+  if (VERSION_SUFFIX.test(p.name)) return 'a versioned record of another protocol';
+  return null;
+}
+
 export function isTradedProduct(p: Protocol): boolean {
-  if (p.category !== null && PRODUCT_CATEGORIES.has(p.category)) return true;
-  if (VERSION_SUFFIX.test(p.name)) return true;
-  if (/\b(wrapped|staked|staking)\b/i.test(p.name)) return true;
-  return EXCHANGE_NAMES.some((x) => p.name === x || p.name.startsWith(`${x} `));
+  return tradedProductReason(p) !== null;
 }
 
 // ---------------------------------------------------------------- fitting
@@ -165,9 +181,21 @@ function fitOf(category: string, ratios: number[]): CategoryFit {
 }
 
 /**
+ * The fit group a category prices under: its own name. A category with
+ * fewer than three launched peers prices at the overall fit instead, and
+ * the board marks those rows "overall" — a thin three-peer median would
+ * be a weaker claim than the 128-peer overall one, not a stronger one.
+ */
+export function fitGroupOf(category: string | null): string {
+  return category ?? 'Uncategorised';
+}
+
+/**
  * Fit the market-cap/TVL multiples of the already-launched protocols, per
  * category and overall. Categories with fewer than three traded peers fall
- * back to the overall fit when a protocol is priced.
+ * back to the overall fit when a protocol is priced. The overall fit is
+ * winsorised at its own 5th and 95th percentiles first, so one mispriced
+ * micro-cap cannot stretch the band every fallback row displays.
  */
 export function peerMultiples(protocols: Protocol[]): { byCategory: Map<string, CategoryFit>; global: CategoryFit } {
   const groups = new Map<string, number[]>();
@@ -176,7 +204,7 @@ export function peerMultiples(protocols: Protocol[]): { byCategory: Map<string, 
     if (recordsNoToken(p) || p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
     const ratio = p.mcap_usd / p.tvl_usd;
     if (!Number.isFinite(ratio) || ratio <= 0) continue;
-    const key = p.category ?? 'Uncategorised';
+    const key = fitGroupOf(p.category);
     const list = groups.get(key);
     if (list) list.push(ratio);
     else groups.set(key, [ratio]);
@@ -186,7 +214,11 @@ export function peerMultiples(protocols: Protocol[]): { byCategory: Map<string, 
   for (const [category, ratios] of groups) {
     if (ratios.length >= 3) byCategory.set(category, fitOf(category, ratios));
   }
-  return { byCategory, global: fitOf('All categories', all) };
+  const sortedAll = [...all].sort((a, b) => a - b);
+  const lo = quantile(sortedAll, 0.05);
+  const hi = quantile(sortedAll, 0.95);
+  const winsorised = all.map((r) => Math.min(hi, Math.max(lo, r)));
+  return { byCategory, global: fitOf('All categories', winsorised) };
 }
 
 // ---------------------------------------------------------------- valuation
@@ -212,7 +244,7 @@ const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.m
  * disagreement about the category, not a made-up error bar.
  */
 export function valueProtocol(p: Protocol, fits: { byCategory: Map<string, CategoryFit>; global: CategoryFit }, asOf: string): Valuation {
-  const fit = (p.category !== null ? fits.byCategory.get(p.category) : undefined) ?? fits.global;
+  const fit = fits.byCategory.get(fitGroupOf(p.category)) ?? fits.global;
   const growth = clamp(p.change_7d ?? 0, -40, 40);
   const momentumMult = 1 + growth / 200;
   const ageDays = ageInDays(p.listed_at, asOf);
@@ -228,6 +260,7 @@ export function valueProtocol(p: Protocol, fits: { byCategory: Map<string, Categ
     implied: price(fit.median),
     impliedLow: price(fit.p25),
     impliedHigh: price(fit.p75),
+    fitName: fit.category,
   };
 }
 
@@ -239,11 +272,14 @@ export function usd(n: number): string {
   return `$${s.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
 }
 
-/** Rough per-session gas in dollars for the chains the snapshot names most; anything else prices as a cheap L2. */
+/** Rough per-session gas in dollars, keyed by the chain names the snapshot itself uses; an unlisted chain prices at the $2 L2-class fallback in gasFor(). */
 const GAS_BY_CHAIN: Record<string, number> = {
-  Ethereum: 25, Solana: 1, Base: 1, Arbitrum: 1, Optimism: 1, BSC: 1, Polygon: 1,
-  Avalanche: 3, Fantom: 1, Gnosis: 1, zkSync: 1, Linea: 1, Scroll: 1, Mantle: 1,
-  Blast: 1, Berachain: 2, Sonic: 1, Hyperliquid: 1, Sui: 1, Aptos: 1, Tron: 2,
+  Ethereum: 25, Bitcoin: 5, Solana: 1, Binance: 1, Base: 1, 'Hyperliquid L1': 1,
+  Arbitrum: 1, Sui: 1, Tron: 2, Stellar: 1, Monad: 1, Flare: 1, Avalanche: 3,
+  Polygon: 1, 'Robinhood Chain': 1, TON: 1, Near: 1, Ripple: 1, Berachain: 2,
+  Cronos: 1, Starknet: 1, Algorand: 1, RSK: 2, Mantle: 1, Bittensor: 2, Ink: 1,
+  xDai: 1, Optimism: 1, Sei: 1, Cardano: 2, 'zkSync Era': 1, Aptos: 1, Plasma: 1,
+  Linea: 1, Scroll: 1, Blast: 1, Sonic: 1, Hedera: 1, Injective: 1, Kava: 1,
 };
 
 function gasFor(chain: string): number {
@@ -313,16 +349,26 @@ export function farmPlan(p: Protocol, ageDays: number | null): string[] {
   const gas = gasFor(chain);
   const capital = capitalFor(p.tvl_usd);
   const weeks = ageDays === null ? 12 : clamp(18 - Math.floor(ageDays / 180), 6, 16);
-  const fees = gas * (weeks + 4);
   const others = p.chains.slice(1, 3);
+  // Every fee a step names is collected here first, so the closing total is
+  // the sum of the plan's own itemised costs — never a second formula.
+  const setupFee = gas * 2;
+  const openFee = gas;
+  const rhythmFees = gas * weeks;
+  const spreadFees = others.length * gas * 2;
+  const spreadCapital = others.length * Math.round(capital / 2);
+  const deepenFee = gas;
+  const deepenCapital = Math.round(capital / 2);
+  const totalFees = setupFee + openFee + rhythmFees + (others.length > 0 ? spreadFees : deepenFee);
+  const totalCapital = capital + (others.length > 0 ? spreadCapital : deepenCapital);
   const steps: string[] = [
-    `Set up on ${chain}: open ${p.name} in a fresh wallet kept only for farming and fund it with about ${usd(gas * 4)} for gas plus the working capital below. Cost: about ${usd(gas * 2)} in funding and bridge fees, once. Time: under an hour on day one.`,
-    `Put ${usd(capital)} to work in ${p.name}: ${CORE_ACTION[family]}. Cost: the ${usd(capital)} stays yours and withdrawable; about ${usd(gas)} of gas to open. Time: about 20 minutes.`,
-    `Hold the rhythm for ${weeks} weeks: ${CADENCE[family]}. Cost: about ${usd(gas)} a week in gas, ${usd(gas * weeks)} across the campaign. Time: about 15 minutes a week.`,
+    `Set up on ${chain}: open ${p.name} in a fresh wallet kept only for farming and fund it with about ${usd(gas * 4)} for gas plus the working capital below. Cost: about ${usd(setupFee)} in funding and bridge fees, once. Time: under an hour on day one.`,
+    `Put ${usd(capital)} to work in ${p.name}: ${CORE_ACTION[family]}. Cost: the ${usd(capital)} stays yours and withdrawable; about ${usd(openFee)} of gas to open. Time: about 20 minutes.`,
+    `Hold the rhythm for ${weeks} weeks: ${CADENCE[family]}. Cost: about ${usd(gas)} a week in gas, ${usd(rhythmFees)} across the campaign. Time: about 15 minutes a week.`,
     others.length > 0
-      ? `Spread to ${others.join(' and ')} once the first position is a month old: repeat the core action there at half size. Multi-chain use is the cheapest proof you are a real user. Cost: one bridge fee of about ${usd(gas * 2)} per extra chain. Time: one extra session.`
-      : `Deepen on ${chain} instead of spreading: open a second, different position type in ${p.name} at half the first one's size, so the wallet shows range, not one repeated click. Cost: about ${usd(gas)} of gas. Time: one extra session.`,
-    `From week ${Math.max(1, weeks - 2)}, check ${p.name}'s official channels weekly for a points program, snapshot or token announcement and keep every position live until any claim window closes; save each transaction hash as your eligibility record. Total campaign cost: about ${usd(fees)} in fees over ${weeks} weeks, plus ${usd(capital)} of working capital.`,
+      ? `Spread to ${others.join(' and ')} once the first position is a month old: repeat the core action there at half size, ${usd(Math.round(capital / 2))} of working capital per extra chain. Multi-chain use is the cheapest proof you are a real user. Cost: one bridge fee of about ${usd(gas * 2)} per extra chain, ${usd(spreadFees)} in all. Time: one extra session.`
+      : `Deepen on ${chain} instead of spreading: open a second, different position type in ${p.name} with ${usd(deepenCapital)} more working capital, so the wallet shows range, not one repeated click. Cost: about ${usd(deepenFee)} of gas. Time: one extra session.`,
+    `From week ${Math.max(1, weeks - 2)}, check ${p.name}'s official channels weekly for a points program, snapshot or token announcement and keep every position live until any claim window closes; save each transaction hash as your eligibility record. Total campaign cost: about ${usd(totalFees)} in fees over ${weeks} weeks, plus ${usd(totalCapital)} of working capital.`,
   ];
   return steps;
 }
@@ -393,10 +439,19 @@ export function buildRadar(snapshot: Snapshot): Built {
       rows: board.length,
       live: snapshot.protocols.filter((p) => !recordsNoToken(p)).length,
     },
-    setAside: {
-      count: aside.length,
-      examples: [...aside].sort((a, b) => b.tvl_usd - a.tvl_usd).slice(0, 5).map((p) => p.name),
-    },
+    setAside: (() => {
+      const withReason = aside.map((p) => ({ p, reason: tradedProductReason(p)! }));
+      const exchanges = withReason.filter((x) => x.reason.startsWith('exchange record'));
+      const products = withReason.filter((x) => !x.reason.startsWith('exchange record'));
+      const top = (xs: { p: Protocol }[]): string[] => [...xs].sort((a, b) => b.p.tvl_usd - a.p.tvl_usd).slice(0, 4).map((x) => x.p.name);
+      return {
+        products: { count: products.length, examples: top(products) },
+        exchanges: { count: exchanges.length, examples: top(exchanges) },
+        rows: withReason
+          .sort((a, b) => b.p.tvl_usd - a.p.tvl_usd)
+          .map((x) => ({ name: x.p.name, category: x.p.category, tvl_usd: x.p.tvl_usd, reason: x.reason })),
+      };
+    })(),
     totalImplied: scored.reduce((sum, r) => sum + r.implied, 0),
     fits: fitList,
     globalFit: fits.global,
